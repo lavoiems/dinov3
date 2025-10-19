@@ -12,7 +12,7 @@ from omegaconf import OmegaConf
 from torch import Tensor, nn
 
 import dinov3.distributed as distributed
-from dinov3.checkpointer import init_fsdp_model_from_checkpoint
+from dinov3.checkpointer import init_distributed_from_checkpoint, init_fsdp_model_from_checkpoint
 from dinov3.configs import get_default_config
 from dinov3.data import DataAugmentationDINO
 from dinov3.fsdp.ac_compile_parallelize import ac_compile_parallelize
@@ -330,6 +330,9 @@ class SSLMetaArch(nn.Module):
                 prefixes_not_sharded=["backbone.rope_embed.periods"],
                 process_group=distributed.get_process_subgroup(),
             )
+            self.model_ema.load_state_dict(self.student.state_dict())
+        elif self.cfg.student.pretrained_weights:
+            init_distributed_from_checkpoint(self.student.backbone, self.cfg.student.pretrained_weights)
             self.model_ema.load_state_dict(self.student.state_dict())
         if self.cfg.distillation.enabled:
             if self.cfg.distillation.checkpoint_path != "ignore":

@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, Union
 import torch
 import torch.nn.init
 from torch import Tensor, nn
+from torch.utils.checkpoint import checkpoint
 
 from dinov3.layers import LayerScale, Mlp, PatchEmbed, RMSNorm, RopePositionEmbedding, SelfAttentionBlock, SwiGLUFFN
 from dinov3.utils import named_apply
@@ -325,6 +326,59 @@ class DinoVisionTransformer(nn.Module):
             return self.head(ret["x_norm_clstoken"])
 
 
+class DinoVisionTransformerWithSEM(DinoVisionTransformer):
+    def __init__(self, *args, L=4096, V=32, temp=1.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.L = L
+        self.V = V
+        self.temp = temp
+        sem_in = self.embed_dim * (1 + self.n_storage_tokens)
+        sem_out = L * V
+        self.sem_embed = nn.Linear(sem_in, sem_out, bias=False)
+        self.sem_norm = nn.LayerNorm(sem_out, eps=1e-6)
+        self.sem_out = nn.Linear(sem_out, self.embed_dim, bias=False)
+        # self.sem_cls_norm = nn.LayerNorm(self.embed_dim, eps=1e-6)
+
+    @torch.compile
+    def sem(self, x):
+        o = x.view(len(x), -1)
+        o = self.sem_embed(o)
+        o = self.sem_norm(o)
+        o = o.view(-1, self.L, self.V)
+        o = torch.softmax(o / self.temp, dim=-1)
+        o = o.view(-1, self.L * self.V)
+        return self.sem_out(o)
+
+    def forward_features_list(self, x_list: List[Tensor], masks_list: List[Tensor]) -> List[Dict[str, Tensor]]:
+        x = []
+        rope = []
+        for t_x, t_masks in zip(x_list, masks_list):
+            t2_x, hw_tuple = self.prepare_tokens_with_masks(t_x, t_masks)
+            x.append(t2_x)
+            rope.append(hw_tuple)
+        for _, blk in enumerate(self.blocks):
+            if self.rope_embed is not None:
+                rope_sincos = [self.rope_embed(H=H, W=W) for H, W in rope]
+            else:
+                rope_sincos = [None for r in rope]
+            x = blk(x, rope_sincos)
+        all_x = x
+        output = []
+        for idx, (x, masks) in enumerate(zip(all_x, masks_list)):
+            out = checkpoint(self.sem, x[:, : self.n_storage_tokens + 1], use_reentrant=False)
+            x_norm_patch = self.norm(x[:, self.n_storage_tokens + 1 :])
+            output.append(
+                {
+                    "x_norm_clstoken": self.norm(out),
+                    "x_storage_tokens": self.norm(x[:, 1:]),
+                    "x_norm_patchtokens": x_norm_patch,
+                    "x_prenorm": x,
+                    "masks": masks,
+                }
+            )
+        return output
+
+
 def vit_small(patch_size=16, **kwargs):
     model = DinoVisionTransformer(
         patch_size=patch_size,
@@ -351,6 +405,18 @@ def vit_base(patch_size=16, **kwargs):
 
 def vit_large(patch_size=16, **kwargs):
     model = DinoVisionTransformer(
+        patch_size=patch_size,
+        embed_dim=1024,
+        depth=24,
+        num_heads=16,
+        ffn_ratio=4,
+        **kwargs,
+    )
+    return model
+
+
+def vit_large_sem(patch_size=16, **kwargs):
+    model = DinoVisionTransformerWithSEM(
         patch_size=patch_size,
         embed_dim=1024,
         depth=24,

@@ -37,6 +37,7 @@ import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
 import torch.distributed.checkpoint.filesystem as dcpfs
 import torch.distributed.checkpoint.state_dict as dcpsd
+from torch.distributed._tensor import DTensor, distribute_tensor
 from torch.distributed.checkpoint.stateful import Stateful
 
 logger = logging.getLogger(__name__)
@@ -299,6 +300,38 @@ def init_fsdp_model_from_checkpoint(
         )
     else:  # DCP checkpoint
         load_checkpoint(ckpt_dir=checkpoint_path, model=model, process_group=process_group)
+
+
+def init_distributed_from_checkpoint(model, ckpt_path):
+    logger.info(f"Loading pretrained weights from {ckpt_path}")
+    ckpt = torch.load(ckpt_path)
+    new_sd = {}
+    # Match each param’s mesh/placements
+    for name, p in model.named_parameters():
+        if name in ckpt:
+            t = ckpt[name]  # assumes key exists & same shape
+        else:
+            logger.warn(f"{name} not in ckpt.")
+            continue
+        if isinstance(p, DTensor):
+            # Make src a DTensor with the SAME mesh/placements as the target param
+            new_sd[name] = distribute_tensor(t.to(p.device), p.device_mesh, p.placements)
+        else:
+            new_sd[name] = t.to(p.device)
+
+    # Do the same for buffers if you have them
+    for name, b in model.named_buffers():
+        if name in ckpt:
+            t = ckpt[name]
+            if isinstance(b, DTensor):
+                new_sd[name] = distribute_tensor(t.to(b.device), b.device_mesh, b.placements)
+            else:
+                new_sd[name] = t.to(b.device)
+
+    missing, unexpected = model.load_state_dict(new_sd, strict=False)
+
+    logger.info(f"Missing: {missing}")
+    logger.info(f"Unexpected: {unexpected}")
 
 
 # Initialize a standard non distributed PyTorch model from PyTorch standard checkpoint for evals
