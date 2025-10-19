@@ -42,7 +42,6 @@ def _make_dinov3_m2f_segmentor(
     hidden_dim = 2048 if "hidden_dim" not in kwargs else kwargs["hidden_dim"]
     segmentor = build_segmentation_decoder(
         backbone_model=backbone_model,
-        backbone_name=backbone_name,
         decoder_type="m2f",
         hidden_dim=hidden_dim,
         autocast_dtype=autocast_dtype,
@@ -76,7 +75,7 @@ def dinov3_vit7b16_ms(
     return _make_dinov3_m2f_segmentor(
         backbone_name="dinov3_vit7b16",
         pretrained=pretrained,
-        weights=weights,
+        segmentor_weights=weights,
         backbone_weights=backbone_weights,
         check_hash=check_hash,
         autocast_dtype=autocast_dtype,

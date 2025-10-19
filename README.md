@@ -1,4 +1,8 @@
-🆕 [2025-08-14] :fire: DINOv3 backbones are now available in [Hugging Face Hub](https://huggingface.co/collections/facebook/dinov3-68924841bd6b561778e31009) and [supported](https://huggingface.co/docs/transformers/model_doc/dinov3) by the Hugging Face [Transformers](https://huggingface.co/docs/transformers/index) library
+🆕 [2025-09-17] :fire: DINOv3 backbones are now supported by the [PyTorch Image Models / timm](https://github.com/huggingface/pytorch-image-models/) library starting with version [1.0.20](https://github.com/huggingface/pytorch-image-models/releases/tag/v1.0.20)
+
+[2025-08-29] DINOv3 backbones are [supported](https://huggingface.co/docs/transformers/model_doc/dinov3) by released versions of the Hugging Face [Transformers](https://huggingface.co/docs/transformers/index) library starting with version [4.56.0](https://github.com/huggingface/transformers/releases/tag/v4.56.0)
+
+[2025-08-14] DINOv3 backbones are now available in [Hugging Face Hub](https://huggingface.co/collections/facebook/dinov3-68924841bd6b561778e31009) and [supported](https://huggingface.co/docs/transformers/model_doc/dinov3) by the [development](https://github.com/huggingface/transformers/) version of the Hugging Face [Transformers](https://huggingface.co/docs/transformers/index) library
 
 # DINOv3 🦖🦖🦖
 
@@ -182,7 +186,7 @@ dinov3_vit7b16 = torch.hub.load(REPO_DIR, 'dinov3_vit7b16', source='local', weig
 
 ### Pretrained backbones (via Hugging Face [Transformers](https://huggingface.co/docs/transformers/))
 
-All the backbones are available in the the [DINOv3](https://huggingface.co/collections/facebook/dinov3-68924841bd6b561778e31009) collection on Hugging Face Hub and supported via the Hugging Face [Transformers](https://huggingface.co/docs/transformers/index) library. Please refer to the corresponding documentation for usage, but below is a short example that demonstrates how to obtain an image embedding with either [Pipeline] or the [AutoModel] class.
+All the backbones are available in the [DINOv3](https://huggingface.co/collections/facebook/dinov3-68924841bd6b561778e31009) collection on Hugging Face Hub and supported via the Hugging Face [Transformers](https://huggingface.co/docs/transformers/index) library (with released packages from version 4.56.0). Please refer to the corresponding documentation for usage, but below is a short example that demonstrates how to obtain an image embedding with either [Pipeline] or the [AutoModel] class.
 
 ```python
 from transformers import pipeline
@@ -241,15 +245,17 @@ For models using the LVD-1689M weights (pretrained on web images), please use th
 
 ```python
 import torchvision
+from torchvision.transforms import v2
 
-def make_transform(resize_size: int = 224):
-    to_tensor = transforms.ToTensor()
-    resize = transforms.Resize((resize_size, resize_size), antialias=True)
-    normalize = transforms.Normalize(
+def make_transform(resize_size: int = 256):
+    to_tensor = v2.ToImage()
+    resize = v2.Resize((resize_size, resize_size), antialias=True)
+    to_float = v2.ToDtype(torch.float32, scale=True)
+    normalize = v2.Normalize(
         mean=(0.485, 0.456, 0.406),
         std=(0.229, 0.224, 0.225),
     )
-    return transforms.Compose([to_tensor, resize, normalize])
+    return v2.Compose([to_tensor, resize, to_float, normalize])
 ```
 
 
@@ -258,15 +264,17 @@ For models using the SAT-493M weights (pretrained on satellite imagery), please 
 
 ```python
 import torchvision
+from torchvision.transforms import v2
 
-def make_transform(resize_size: int = 224):
-    to_tensor = transforms.ToTensor()
-    resize = transforms.Resize((resize_size, resize_size), antialias=True)
-    normalize = transforms.Normalize(
+def make_transform(resize_size: int = 256):
+    to_tensor = v2.ToImage()
+    resize = v2.Resize((resize_size, resize_size), antialias=True)
+    to_float = v2.ToDtype(torch.float32, scale=True)
+    normalize = v2.Normalize(
         mean=(0.430, 0.411, 0.296),
         std=(0.213, 0.156, 0.143),
     )
-    return transforms.Compose([to_tensor, resize, normalize])
+    return v2.Compose([to_tensor, resize, to_float, normalize])
 ```
 
 ### Pretrained heads - Image classification
@@ -332,7 +340,7 @@ Full example code of depther on an image
 ```python
 from PIL import Image
 import torch
-from torchvision import transforms
+from torchvision.transforms import v2
 import matplotlib.pyplot as plt
 from matplotlib import colormaps
 
@@ -343,13 +351,14 @@ def get_img():
     return image
 
 def make_transform(resize_size: int | list[int] = 768):
-    to_tensor = transforms.ToTensor()
-    resize = transforms.Resize((resize_size, resize_size), antialias=True)
-    normalize = transforms.Normalize(
+    to_tensor = v2.ToImage()
+    resize = v2.Resize((resize_size, resize_size), antialias=True)
+    to_float = v2.ToDtype(torch.float32, scale=True)
+    normalize = v2.Normalize(
         mean=(0.485, 0.456, 0.406),
         std=(0.229, 0.224, 0.225),
     )
-    return transforms.Compose([to_tensor, resize, normalize])
+    return v2.Compose([to_tensor, resize, to_float, normalize])
 
 depther = torch.hub.load(REPO_DIR, 'dinov3_vit7b16_dd', source="local", weights=<DEPTHER/CHECKPOINT/URL/OR/PATH>, backbone_weights=<BACKBONE/CHECKPOINT/URL/OR/PATH>)
 
@@ -371,6 +380,48 @@ plt.imshow(depths[0,0].cpu(), cmap=colormaps["Spectral"])
 plt.axis("off")
 
 ```
+
+#### Reproduce paper results
+
+Make sure the NYU dataset is setup following [this](DATASETS.md#depth-estimation-on-nyu).
+
+Launch the following to reproduce our paper's depth estimation results on NYUv2 with the pretrained Depther trained on SYNTHMIX:
+
+```shell
+PYTHONPATH=. python -m dinov3.run.submit dinov3/eval/depth/run.py \
+config=dinov3/eval/depth/configs/config-nyu-synthmix-dpt-inference.yaml \
+datasets.root=<PATH/TO/DATASET> \
+load_from=dinov3_vit7b16_dd \
+--output-dir <PATH/TO/OUTPUT/DIR>
+```
+
+Notes:
+- if you want to launch the code without dinov3.run.submit, you can do so using python directly or torchrun:
+
+```shell
+PYTHONPATH=. python dinov3/eval/depth/run.py \
+config=dinov3/eval/depth/configs/config-nyu-synthmix-dpt-inference.yaml \
+datasets.root=<PATH/TO/DATASET> \
+load_from=dinov3_vit7b16_dd \
+output_dir=<PATH/TO/OUTPUT/DIR>
+```
+
+- One can also save prediction results using `result_config.save_results=true`.
+
+
+#### Linear depth estimation on NYUv2 Depth
+```shell
+PYTHONPATH=. python -m dinov3.run.submit dinov3/eval/depth/run.py \
+    model.dino_hub=dinov3_vit7b16 \
+    config=dinov3/eval/depth/configs/config-nyu.yaml \
+    datasets.root=<PATH/TO/DATASET> \
+    --output-dir <PATH/TO/OUTPUT/DIR>
+```
+
+After the job completes, you will find in the output path directory you specified
+- `depth_config.yaml` that contains the config you trained the model with;
+- `model_final.pth`, the final linear head checkpoint at the end of training; and
+- `results-depth.csv` with the final metrics.
 
 ### Pretrained heads - Detector trained on COCO2017 dataset
 
@@ -423,6 +474,16 @@ detector = torch.hub.load(REPO_DIR, 'dinov3_vit7b16_de', source="local", weights
 segmentor = torch.hub.load(REPO_DIR, 'dinov3_vit7b16_ms', source="local", weights=<SEGMENTOR/CHECKPOINT/URL/OR/PATH>, backbone_weights=<BACKBONE/CHECKPOINT/URL/OR/PATH>)
 ```
 
+Example command to run a full inference on ADE20K with the provided segmentor (ViT-7B + M2F):
+
+```shell
+PYTHONPATH=. python -m dinov3.run.submit dinov3/eval/segmentation/run.py \
+config=dinov3/eval/segmentation/configs/config-ade20k-m2f-inference.yaml  \
+datasets.root=<PATH/TO/DATASET> \
+load_from=dinov3_vit7b16_ms \
+--output-dir <PATH/TO/OUTPUT/DIR>
+```
+
 Full example code of segmentator on an image
 
 ```python
@@ -445,13 +506,14 @@ def get_img():
     return image
 
 def make_transform(resize_size: int | list[int] = 768):
-    to_tensor = transforms.ToTensor()
-    resize = transforms.Resize((resize_size, resize_size), antialias=True)
-    normalize = transforms.Normalize(
+    to_tensor = v2.ToImage()
+    resize = v2.Resize((resize_size, resize_size), antialias=True)
+    to_float = v2.ToDtype(torch.float32, scale=True)
+    normalize = v2.Normalize(
         mean=(0.485, 0.456, 0.406),
         std=(0.229, 0.224, 0.225),
     )
-    return transforms.Compose([to_tensor, resize, normalize])
+    return v2.Compose([to_tensor, resize, to_float, normalize])
 
 segmentor = torch.hub.load(REPO_DIR, 'dinov3_vit7b16_ms', source="local", weights=<SEGMENTOR/CHECKPOINT/URL/OR/PATH>, backbone_weights=<BACKBONE/CHECKPOINT/URL/OR/PATH>)
 
@@ -693,6 +755,20 @@ PYTHONPATH=${PWD} python -m dinov3.run.submit dinov3/eval/linear.py \
   train.val_dataset=ImageNet:split=VAL:root=<PATH/TO/DATASET>:extra=<PATH/TO/DATASET>
 ```
 
+### Linear segmentation with data augmentation on ADE20K
+
+```shell
+PYTHONPATH=. python -m dinov3.run.submit dinov3/eval/segmentation/run.py \
+model.dino_hub=dinov3_vit7b16 \
+config=dinov3/eval/segmentation/configs/config-ade20k-linear-training.yaml \
+datasets.root=<PATH/TO/DATASET> \
+--output-dir <PATH/TO/OUTPUT/DIR>
+```
+
+After the job completes, you will find in the output path directory you specified
+- `segmentation_config.yaml` that contains the config you trained the model with;
+- `model_final.pth`, the final linear head checkpoint at the end of training; and
+- `results-semantic-segmentation.csv` with the final metrics.
 
 ### Text alignment on DINOv3 using dino.txt
 
