@@ -28,14 +28,15 @@ from dinov3.checkpointer import (
 )
 from dinov3.configs import setup_config, setup_job, setup_multidistillation
 from dinov3.data import (
+    CombinedDataLoader,
     MaskingGenerator,
     SamplerType,
     collate_data_and_cast,
     make_data_loader,
     make_dataset,
-    CombinedDataLoader,
 )
 from dinov3.logging import MetricLogger, setup_logging
+from dinov3.train.cd_meta_arch import CDMetaArch
 from dinov3.train.cosine_lr_scheduler import CosineScheduler, linear_warmup_cosine_decay
 from dinov3.train.multidist_meta_arch import MultiDistillationMetaArch
 from dinov3.train.ssl_meta_arch import SSLMetaArch
@@ -603,6 +604,7 @@ def main(argv=None):
     meta_arch = {
         "SSLMetaArch": SSLMetaArch,
         "MultiDistillationMetaArch": MultiDistillationMetaArch,
+        "CDMetaArch": CDMetaArch,
     }.get(cfg.MODEL.META_ARCHITECTURE, None)
     if meta_arch is None:
         raise ValueError(f"Unknown MODEL.META_ARCHITECTURE {cfg.MODEL.META_ARCHITECTURE}")

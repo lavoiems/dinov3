@@ -169,6 +169,7 @@ def submit_jobs(class_to_submit, output_dir, submitit_args, name="fairvit"):
         kwargs["slurm_comment"] = submitit_args.comment
     if submitit_args.exclude:
         kwargs["slurm_exclude"] = submitit_args.exclude
+    kwargs["slurm_constraint"] = "hopper"
 
     executor_params = get_slurm_executor_parameters(
         nodes=submitit_args.nodes,
@@ -176,7 +177,7 @@ def submit_jobs(class_to_submit, output_dir, submitit_args, name="fairvit"):
         timeout_min=submitit_args.timeout,  # max is 60 * 72
         slurm_signal_delay_s=120,
         slurm_partition=submitit_args.slurm_partition,
-        slurm_qos=submitit_args.slurm_qos,
+        # slurm_qos=submitit_args.slurm_qos,
         # slurm_account=submitit_args.slurm_account,
         slurm_additional_parameters=dict(nice=submitit_args.slurm_nice),
         **kwargs,
