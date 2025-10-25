@@ -39,7 +39,7 @@ from dinov3.eval.data import create_train_dataset_dict, get_num_classes, pad_mul
 from dinov3.eval.helpers import args_dict_to_dataclass, cli_parser, write_results
 from dinov3.eval.metrics import ClassificationMetricType, build_classification_metric
 from dinov3.eval.setup import ModelConfig, load_model_and_context
-from dinov3.eval.utils import LossType, ModelWithIntermediateLayers, average_metrics, evaluate
+from dinov3.eval.utils import LossType, ModelWithAllLayers, ModelWithIntermediateLayers, average_metrics, evaluate
 from dinov3.eval.utils import save_results as default_save_results_func
 from dinov3.logging import MetricLogger, SmoothedValue
 from dinov3.run.init import job_context
@@ -103,6 +103,7 @@ class TrainConfig:
     checkpoint_retention_policy: CheckpointRetentionPolicy = CheckpointRetentionPolicy.NONE  # keep checkpoints or not
     resume: bool = True  # whether to resume from existing checkpoints
     classifier_fpath: Optional[str] = None  # path to a file containing pretrained linear classifiers
+    use_sem: bool = False
 
 
 @dataclass
@@ -145,7 +146,9 @@ def remove_ddp_wrapper(m: nn.Module) -> nn.Module:
     return m.module if has_ddp_wrapper(m) else m
 
 
-def create_linear_input(x_tokens_list, use_n_blocks, use_avgpool):
+def create_linear_input(x_tokens_list, use_n_blocks, use_avgpool, use_sem):
+    if use_sem:
+        return x_tokens_list
     intermediate_output = x_tokens_list[-use_n_blocks:]
     output = torch.cat([class_token for _, class_token in intermediate_output], dim=-1)
     if use_avgpool:
@@ -163,18 +166,19 @@ def create_linear_input(x_tokens_list, use_n_blocks, use_avgpool):
 class LinearClassifier(nn.Module):
     """Linear layer to train on top of frozen features"""
 
-    def __init__(self, out_dim, use_n_blocks, use_avgpool, num_classes=1000):
+    def __init__(self, out_dim, use_n_blocks, use_avgpool, use_sem=False, num_classes=1000):
         super().__init__()
         self.out_dim = out_dim
         self.use_n_blocks = use_n_blocks
         self.use_avgpool = use_avgpool
         self.num_classes = num_classes
+        self.use_sem = use_sem
         self.linear = nn.Linear(out_dim, num_classes)
         self.linear.weight.data.normal_(mean=0.0, std=0.01)
         self.linear.bias.data.zero_()
 
     def forward(self, x_tokens_list):
-        output = create_linear_input(x_tokens_list, self.use_n_blocks, self.use_avgpool)
+        output = create_linear_input(x_tokens_list, self.use_n_blocks, self.use_avgpool, self.use_sem)
         return self.linear(output)
 
 
@@ -209,21 +213,25 @@ def scale_lr(learning_rates, batch_size):
     return learning_rates * (batch_size * distributed.get_world_size()) / 256.0
 
 
-def setup_linear_classifiers(sample_output, n_last_blocks_list, learning_rates, batch_size, num_classes=1000):
+def setup_linear_classifiers(
+    sample_output, n_last_blocks_list, learning_rates, batch_size, use_sem=False, num_classes=1000
+):
     linear_classifiers_dict = nn.ModuleDict()
     optim_param_groups = []
     for n in n_last_blocks_list:
-        for avgpool in [True]:
+        for avgpool in [True] if not use_sem else [False]:
             for _lr in learning_rates:
                 lr = scale_lr(_lr, batch_size)
-                out_dim = create_linear_input(sample_output, use_n_blocks=n, use_avgpool=avgpool).shape[1]
+                out_dim = create_linear_input(
+                    sample_output, use_n_blocks=n, use_avgpool=avgpool, use_sem=use_sem
+                ).shape[1]
                 linear_classifier = LinearClassifier(
-                    out_dim, use_n_blocks=n, use_avgpool=avgpool, num_classes=num_classes
+                    out_dim, use_n_blocks=n, use_avgpool=avgpool, num_classes=num_classes, use_sem=use_sem
                 )
                 linear_classifier = linear_classifier.cuda()
-                linear_classifiers_dict[
-                    f"classifier_{n}_blocks_avgpool_{avgpool}_lr_{lr:.5f}".replace(".", "_")
-                ] = linear_classifier
+                linear_classifiers_dict[f"classifier_{n}_blocks_avgpool_{avgpool}_lr_{lr:.5f}".replace(".", "_")] = (
+                    linear_classifier
+                )
                 optim_param_groups.append({"params": linear_classifier.parameters(), "lr": lr})
 
     linear_classifiers = AllClassifiers(linear_classifiers_dict)
@@ -425,6 +433,7 @@ def setup_linear_training(
         config.n_last_blocks_list,
         config.learning_rates,
         config.batch_size,
+        config.use_sem,
         training_num_classes,
     )
     max_iter = config.epochs * config.epoch_length
@@ -473,7 +482,15 @@ def train_linear_classifiers(
     val_evaluator: Evaluator,
     checkpoint_output_dir: str,
 ):
-    (linear_classifiers, start_iter, max_iter, criterion, optimizer, scheduler, best_accuracy,) = setup_linear_training(
+    (
+        linear_classifiers,
+        start_iter,
+        max_iter,
+        criterion,
+        optimizer,
+        scheduler,
+        best_accuracy,
+    ) = setup_linear_training(
         config=train_config,
         sample_output=feature_model(train_dataset[0][0].unsqueeze(0).cuda()),
         training_num_classes=training_num_classes,
@@ -598,7 +615,10 @@ def eval_linear_with_model(*, model: torch.nn.Module, autocast_dtype, config: Li
     )
     n_last_blocks = max(config.train.n_last_blocks_list)
     autocast_ctx = partial(torch.autocast, device_type="cuda", enabled=True, dtype=autocast_dtype)
-    feature_model = ModelWithIntermediateLayers(model, n_last_blocks, autocast_ctx)
+    if config.train.use_sem:
+        feature_model = ModelWithAllLayers(model, n_last_blocks, autocast_ctx)
+    else:
+        feature_model = ModelWithIntermediateLayers(model, n_last_blocks, autocast_ctx)
 
     save_results_func = None
     if config.save_results:

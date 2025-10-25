@@ -89,12 +89,25 @@ class ModelWithIntermediateLayers(nn.Module):
         with torch.inference_mode():
             with self.autocast_ctx():
                 features = self.feature_model.get_intermediate_layers(
-                    images,
-                    n=self.n,
-                    reshape=self.reshape,
-                    return_class_token=self.return_class_token
+                    images, n=self.n, reshape=self.reshape, return_class_token=self.return_class_token
                 )
         return features
+
+
+class ModelWithAllLayers(nn.Module):
+    def __init__(self, feature_model, n_last_blocks, autocast_ctx):
+        super().__init__()
+        self.feature_model = feature_model
+        self.feature_model.eval()
+        self.autocast_ctx = autocast_ctx
+        self.feature_model.sem_out = nn.Identity()
+        self.feature_model.norm = nn.Identity()
+
+    def forward(self, images):
+        with torch.inference_mode():
+            with self.autocast_ctx():
+                features = self.feature_model.forward_features(images)["x_norm_clstoken"]
+        return features.clone()
 
 
 @torch.inference_mode()
