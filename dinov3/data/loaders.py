@@ -10,7 +10,9 @@ from typing import Any, Callable, List, Optional, TypeVar
 import torch
 from torch.utils.data import Sampler
 
-from .datasets import ADE20K, NYU, CocoCaptions, ImageNet, ImageNet22k
+import webdataset as wds
+
+from .datasets import ADE20K, NYU, CocoCaptions, ImageNet, ImageNet22k, BLIP3Kale
 from .samplers import EpochSampler, InfiniteSampler, ShardedInfiniteSampler
 
 logger = logging.getLogger("dinov3")
@@ -76,6 +78,10 @@ def _parse_dataset_str(dataset_str: str):
         class_ = WDS
         if "split" in kwargs:
             kwargs["split"] = WDS.Split[kwargs["split"]]
+    elif name == "BLIP3Kale":
+        class_ = BLIP3Kale
+        if "split" in kwargs:
+            kwargs["split"] = BLIP3Kale.Split[kwargs["split"]]
     else:
         raise ValueError(f'Unsupported dataset "{name}"')
 
@@ -106,7 +112,10 @@ def make_dataset(
     class_, kwargs = _parse_dataset_str(dataset_str)
     dataset = class_(transform=transform, target_transform=target_transform, transforms=transforms, **kwargs)
 
-    logger.info(f"# of dataset samples: {len(dataset):,d}")
+    try:
+        logger.info(f"# of dataset samples: {len(dataset):,d}")
+    except TypeError:  # dataset has no length
+        logger.info("infinite size dataset (webdataset)")
 
     # Aggregated datasets do not expose (yet) these attributes, so add them.
     if not hasattr(dataset, "transform"):
@@ -217,27 +226,36 @@ def make_data_loader(
         worker_init_fn: Optional init function for each dataloader worker.
     """
 
-    sampler = _make_sampler(
-        dataset=dataset,
-        type=sampler_type,
-        shuffle=shuffle,
-        seed=seed,
-        size=sampler_size,
-        advance=sampler_advance,
-    )
+    if isinstance(dataset, wds.WebDataset):
+        dataset = dataset.shuffle(10000).map(dataset.make_sample)
+        dataset = dataset.batched(batch_size)
 
-    logger.info("using PyTorch data loader")
-    data_loader = torch.utils.data.DataLoader(
-        dataset,
-        sampler=sampler,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        pin_memory=True,
-        drop_last=drop_last,
-        persistent_workers=persistent_workers,
-        collate_fn=collate_fn,
-        worker_init_fn=worker_init_fn,
-    )
+        data_loader = wds.WebLoader(dataset, batch_size=None, num_workers=num_workers)
+
+        # We unbatch, shuffle, and rebatch to mix samples from different workers.
+        data_loader = data_loader.unbatched().shuffle(10000).batched(batch_size, collation_fn=collate_fn)
+    else:
+        sampler = _make_sampler(
+            dataset=dataset,
+            type=sampler_type,
+            shuffle=shuffle,
+            seed=seed,
+            size=sampler_size,
+            advance=sampler_advance,
+        )
+
+        logger.info("using PyTorch data loader")
+        data_loader = torch.utils.data.DataLoader(
+            dataset,
+            sampler=sampler,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            pin_memory=True,
+            drop_last=drop_last,
+            persistent_workers=persistent_workers,
+            collate_fn=collate_fn,
+            worker_init_fn=worker_init_fn,
+        )
 
     try:
         logger.info(f"# of batches: {len(data_loader):,d}")
